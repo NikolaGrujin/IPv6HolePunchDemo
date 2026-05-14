@@ -8,7 +8,6 @@ public class UDPChat extends JFrame
 {
     private final PunchedUDP socket;
     private final JTextArea textArea;
-    private final Thread receiver;
 
     UDPChat(PunchedUDP socket)
     {
@@ -23,9 +22,7 @@ public class UDPChat extends JFrame
         JTextField textField = new JTextField();
         JButton sendButton = new JButton("Send");
 
-        sendButton.addActionListener((e) -> {
-            this.socket.send(textField.getText().getBytes(StandardCharsets.UTF_8));
-        });
+        sendButton.addActionListener((_) -> this.socket.send(textField.getText().getBytes(StandardCharsets.UTF_8)));
 
         JPanel messagePanel = new JPanel(new FlowLayout());
         messagePanel.add(textField);
@@ -44,8 +41,8 @@ public class UDPChat extends JFrame
             }
         });
 
-        this.receiver = new Thread(new ReceiverThread());
-        this.receiver.start();
+        Thread receiver = new Thread(new ReceiverThread());
+        receiver.start();
     }
 
     private class ReceiverThread implements Runnable
@@ -61,9 +58,7 @@ public class UDPChat extends JFrame
                 {
                     break;
                 }
-                SwingUtilities.invokeLater(() -> {
-                    textArea.append("\n" + message);
-                });
+                SwingUtilities.invokeLater(() -> textArea.append("\n" + message));
             }
         }
     }
