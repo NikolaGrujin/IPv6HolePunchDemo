@@ -33,22 +33,24 @@ public class Main
             reader.nextLine();
 
             // Create punched UDP socket
-            PunchedUDP udpSocket = new PunchedUDP(othersAddress, othersPort);
+            PunchedUDP udpSocket = new PunchedUDP(ownPort, othersAddress, othersPort);
 
             // Connect punched UDP socket
             boolean success = udpSocket.connect();
             if(success)
             {
-
+                // Create UDP chat
+                new UDPChat(udpSocket);
             }
             else
             {
-
+                // Connection was unsuccessful, exit
+                System.out.println("Connection failed. Exiting...");
             }
         }
         catch(UnknownHostException uhe)
         {
-            System.err.println("Encountered UnknownHostExcepton.");
+            System.err.println("Encountered UnknownHostException.");
             uhe.printStackTrace(System.err);
         }
     }

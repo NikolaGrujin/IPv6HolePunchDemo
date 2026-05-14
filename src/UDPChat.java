@@ -1,11 +1,14 @@
 import javax.swing.*;
 import java.awt.*;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.nio.charset.StandardCharsets;
 
 public class UDPChat extends JFrame
 {
     private final PunchedUDP socket;
     private final JTextArea textArea;
+    private final Thread receiver;
 
     UDPChat(PunchedUDP socket)
     {
@@ -14,7 +17,9 @@ public class UDPChat extends JFrame
         this.setLayout(new BorderLayout());
 
         this.textArea = new JTextArea();
-        textArea.setEditable(false);
+        this.textArea.setEditable(false);
+        JScrollPane scrollPane = new JScrollPane(this.textArea);
+        scrollPane.add(textArea);
         JTextField textField = new JTextField();
         JButton sendButton = new JButton("Send");
 
@@ -26,11 +31,21 @@ public class UDPChat extends JFrame
         messagePanel.add(textField);
         messagePanel.add(sendButton);
 
-        this.add(textArea, BorderLayout.CENTER);
+        this.add(scrollPane, BorderLayout.CENTER);
         this.add(messagePanel, BorderLayout.SOUTH);
 
         this.setVisible(true);
 
+        this.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+        this.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                socket.close();
+            }
+        });
+
+        this.receiver = new Thread(new ReceiverThread());
+        this.receiver.start();
     }
 
     private class ReceiverThread implements Runnable
@@ -42,8 +57,12 @@ public class UDPChat extends JFrame
             {
                 byte[] data = socket.receive();
                 String message = new String(data, StandardCharsets.UTF_8);
+                if(message.equals("close"))
+                {
+                    break;
+                }
                 SwingUtilities.invokeLater(() -> {
-                    textArea.append(message);
+                    textArea.append("\n" + message);
                 });
             }
         }
