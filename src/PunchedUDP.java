@@ -9,18 +9,18 @@ import java.util.concurrent.atomic.AtomicLong;
 public class PunchedUDP
 {
     private DatagramSocket socket = null;
-    private InetAddress peerAddress;
-    private int peerPort;
+    private final InetAddress peerAddress;
+    private final int peerPort;
 
-    private AtomicBoolean alive;
-    private AtomicLong lastSentKeepAlive;
-    private AtomicLong lastReceivedKeepAlive;
+    private final AtomicBoolean alive;
+    private final AtomicLong lastSentKeepAlive;
+    private final AtomicLong lastReceivedKeepAlive;
 
-    private Thread receiveThread;
-    private Thread sendThread;
+    private final Thread receiveThread;
+    private final Thread sendThread;
 
-    private BlockingQueue<byte[]> receiveQueue;
-    private BlockingQueue<byte[]> sendQueue;
+    private final BlockingQueue<byte[]> receiveQueue;
+    private final BlockingQueue<byte[]> sendQueue;
 
     PunchedUDP(int ownPort, InetAddress address, int port)
     {
@@ -83,7 +83,7 @@ public class PunchedUDP
         catch(IOException ioe)
         {
             System.err.println("Encountered IOException while attempting to establish punched UDP connection.");
-            ioe.printStackTrace();
+            ioe.printStackTrace(System.err);
         }
         return false;
     }
@@ -163,10 +163,8 @@ public class PunchedUDP
         {
             this.alive.set(false);
             this.send(("close").getBytes(StandardCharsets.UTF_8));
-            while (this.receiveThread.isAlive() | this.sendThread.isAlive())
-            {
-                Thread.sleep(100);
-            }
+            this.receiveThread.join();
+            this.sendThread.join();
             this.socket.close();
         }
         catch(InterruptedException ie)
