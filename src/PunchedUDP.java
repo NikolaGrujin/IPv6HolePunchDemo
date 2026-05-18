@@ -11,7 +11,10 @@ public class PunchedUDP
     private final InetAddress peerAddress;
     private final int peerPort;
 
+    private final AtomicBoolean initiated;
     private final AtomicBoolean alive;
+    private final AtomicBoolean closed;
+
     private final AtomicLong lastSentPacket;
     private final AtomicLong lastReceivedPacket;
 
@@ -25,7 +28,9 @@ public class PunchedUDP
     {
         this.peerAddress = address;
         this.peerPort = port;
+        this.initiated = new AtomicBoolean(false);
         this.alive = new AtomicBoolean(false);
+        this.closed = new AtomicBoolean(false);
         this.lastSentPacket = new AtomicLong(0);
         this.lastReceivedPacket = new AtomicLong(0);
         this.receiveThread = new Thread(new ReceiveThread());
@@ -43,11 +48,9 @@ public class PunchedUDP
     }
 
     /**
-     * Sends an initiation packet to the peer at the address of the socket, and waits for a response.
-     *
-     * @return True if a response was received, false if timed out.
+     * Sends an initiation packet to the peer at the address of the socket.
      */
-    private boolean initiation()
+    private void initiation()
     {
         try
         {
@@ -57,28 +60,12 @@ public class PunchedUDP
             initiationPacket.setAddress(this.peerAddress);
             initiationPacket.setPort(this.peerPort);
             this.socket.send(initiationPacket);
-
-            // Receive initiation packet
-            DatagramPacket initiationResponse = new DatagramPacket(new byte[512], 512);
-            this.socket.receive(initiationResponse);
-
-            // Parse response and check if it's initiation response
-            String response = new String(initiationResponse.getData(), 0, initiationResponse.getLength(), StandardCharsets.UTF_8);
-            if(response.equals("hello"))
-            {
-                return true;
-            }
-        }
-        catch(SocketTimeoutException ste)
-        {
-            return false;
         }
         catch(IOException ioe)
         {
             System.err.println("Encountered IOException while attempting to establish punched UDP connection.");
             ioe.printStackTrace(System.err);
         }
-        return false;
     }
 
     /**
@@ -90,49 +77,36 @@ public class PunchedUDP
      */
     public boolean connect()
     {
-        // Enable socket timeout
-        try
-        {
-            this.socket.setSoTimeout(1000);
-        }
-        catch(SocketException se)
-        {
-            System.err.println("Encountered IOException while trying to set socket timeout for punched UDP socket.");
-            se.printStackTrace(System.err);
-            return this.isAlive();
-        }
+        // Start receive thread
+        this.receiveThread.start();
 
         // Try to initiate connection 10 times
         for(int i = 0; i < 10; i++)
         {
-            if(initiation())
+            this.initiation();
+
+            if(this.initiated.get())
             {
-                // Set alive to true if initiation was successful
                 this.alive.set(true);
                 break;
             }
-            else
+
+            try
             {
-                System.out.println("Punched UDP connection initiation attempt #" + (i+1) + " failed.");
+                System.out.println("Punched UDP connection initiation attempt #" + (i + 1) + " failed.");
+                Thread.sleep(100);
+            }
+            catch(InterruptedException ie)
+            {
+                System.err.println("Encountered InterruptedException while attempting to initiation punched UDP connection.");
+                ie.printStackTrace(System.err);
             }
         }
         // Start send and receive threads if connection is alive
         if(this.isAlive())
         {
             System.out.println("Punched UDP socket connected");
-            this.receiveThread.start();
             this.watchdog.scheduleAtFixedRate(new WatchdogThread(), 1, 1, TimeUnit.SECONDS);
-
-            // Disable socket timeout
-            try
-            {
-                this.socket.setSoTimeout(0);
-            }
-            catch(SocketException se)
-            {
-                System.err.println("Encountered IOException while trying to set socket timeout for punched UDP socket.");
-                se.printStackTrace(System.err);
-            }
         }
         return this.isAlive();
     }
@@ -148,18 +122,32 @@ public class PunchedUDP
     }
 
     /**
+     * Sets the connection's alive boolean to false,
+     * indicating the connection is dead.
+     */
+    private void markDead()
+    {
+        this.alive.set(false);
+        this.socket.close();
+    }
+
+    /**
      * Closes connection. Terminates send thread and receive thread, and closes UDP socket.
      */
     public void close()
     {
         try
         {
+            if(!closed.compareAndSet(false, true))
+            {
+                return;
+            }
+
             this.alive.set(false);
             this.send(("close").getBytes(StandardCharsets.UTF_8));
-            this.receiveThread.join();
             watchdog.shutdownNow();
-
             this.socket.close();
+            this.receiveThread.join();
         }
         catch(InterruptedException ie)
         {
@@ -181,6 +169,7 @@ public class PunchedUDP
             packet.setAddress(this.peerAddress);
             packet.setPort(this.peerPort);
             this.socket.send(packet);
+            this.lastSentPacket.set(System.currentTimeMillis());
         }
         catch(IOException ioe)
         {
@@ -213,29 +202,47 @@ public class PunchedUDP
         @Override
         public void run()
         {
-            while(isAlive())
+            while(!closed.get())
             {
-                try
-                {
+                try {
                     DatagramPacket packet = new DatagramPacket(new byte[512], 512);
                     socket.receive(packet);
-                    lastReceivedPacket.set(System.currentTimeMillis());
 
-                    byte[] data = packet.getData();
-                    String dataString = new String(data, 0, packet.getLength(), StandardCharsets.UTF_8);
-                    if(dataString.equals("keep-alive"))
+                    // Make sure the packet is coming from the correct address
+                    if (!packet.getAddress().equals(peerAddress) || packet.getPort() != peerPort)
                     {
                         continue;
                     }
 
-                    receiveQueue.put(data);
-                    if(dataString.equals("close"))
+                    lastReceivedPacket.set(System.currentTimeMillis());
+
+                    byte[] data = packet.getData();
+                    String dataString = new String(data, 0, packet.getLength(), StandardCharsets.UTF_8);
+                    if(dataString.equals("hello"))
+                    {
+                        initiated.set(true);
+                        alive.set(true);
+                        continue;
+                    }
+                    else if(dataString.equals("keep-alive"))
+                    {
+                        continue;
+                    }
+                    else if(dataString.equals("close"))
                     {
                         break;
                     }
+
+                    byte[] trimmedData = new byte[packet.getLength()];
+                    System.arraycopy(data, 0, trimmedData, 0, packet.getLength());
+                    receiveQueue.put(trimmedData);
                 }
                 catch(IOException ioe)
                 {
+                    if(closed.get())
+                    {
+                        break;
+                    }
                     System.err.println("Encountered IOException while attempting to receive packet on punched UDP socket.");
                     ioe.printStackTrace(System.err);
                 }
@@ -245,17 +252,40 @@ public class PunchedUDP
                     ie.printStackTrace(System.err);
                 }
             }
+
+            markDead();
         }
     }
 
     private class WatchdogThread implements Runnable
     {
+        private final byte[] KEEP_ALIVE_PACKET = ("keep-alive").getBytes(StandardCharsets.UTF_8);
+
         @Override
         public void run()
         {
+            if(closed.get() || !isAlive())
+            {
+                return;
+            }
+
             long now = System.currentTimeMillis();
             long sinceLastSend = now - lastSentPacket.get();
             long sinceLastReceive = now - lastReceivedPacket.get();
+
+            if(sinceLastReceive > 20000)
+            {
+                System.out.println("UDP punched connection timed out.");
+                markDead();
+            }
+
+            if(sinceLastSend > 5000)
+            {
+                if(isAlive())
+                {
+                    send(KEEP_ALIVE_PACKET);
+                }
+            }
         }
     }
 }
