@@ -14,6 +14,8 @@ public class PunchedUDP
     private final AtomicBoolean initiated;
     private final AtomicBoolean alive;
     private final AtomicBoolean closed;
+    private final AtomicBoolean sawHello;
+    private final AtomicBoolean sawAck;
 
     private final AtomicLong lastSentPacket;
     private final AtomicLong lastReceivedPacket;
@@ -26,16 +28,26 @@ public class PunchedUDP
 
     PunchedUDP(int ownPort, InetAddress address, int port)
     {
+        // Peer address and port
         this.peerAddress = address;
         this.peerPort = port;
+
+        // Connection flags
         this.initiated = new AtomicBoolean(false);
         this.alive = new AtomicBoolean(false);
         this.closed = new AtomicBoolean(false);
+        this.sawHello = new AtomicBoolean(false);
+        this.sawAck = new AtomicBoolean(false);
+
+        // Timestamps
         this.lastSentPacket = new AtomicLong(0);
         this.lastReceivedPacket = new AtomicLong(0);
+
+        // Receive thread, receive queue, and connection watchdog thread
         this.receiveThread = new Thread(new ReceiveThread());
         this.receiveQueue = new LinkedBlockingQueue<>();
         this.watchdog = Executors.newSingleThreadScheduledExecutor();
+
         try
         {
             this.socket = new DatagramSocket(new InetSocketAddress(ownPort));
@@ -87,14 +99,13 @@ public class PunchedUDP
 
             if(this.initiated.get())
             {
-                this.alive.set(true);
                 break;
             }
 
             try
             {
                 System.out.println("Punched UDP connection initiation attempt #" + (i + 1) + " failed.");
-                Thread.sleep(100);
+                Thread.sleep(250);
             }
             catch(InterruptedException ie)
             {
@@ -102,6 +113,11 @@ public class PunchedUDP
                 ie.printStackTrace(System.err);
             }
         }
+        if(this.initiated.get())
+        {
+            this.alive.set(true);
+        }
+
         // Start send and receive threads if connection is alive
         if(this.isAlive())
         {
@@ -128,6 +144,7 @@ public class PunchedUDP
     private void markDead()
     {
         this.alive.set(false);
+        this.closed.set(true);
         this.socket.close();
     }
 
@@ -220,8 +237,19 @@ public class PunchedUDP
                     String dataString = new String(data, 0, packet.getLength(), StandardCharsets.UTF_8);
                     if(dataString.equals("hello"))
                     {
-                        initiated.set(true);
-                        alive.set(true);
+                        if(!sawHello.getAndSet(true))
+                        {
+                            send(("hello-ack").getBytes(StandardCharsets.UTF_8));
+                        }
+                        continue;
+                    }
+                    else if(dataString.equals("hello-ack"))
+                    {
+                        if(!sawAck.getAndSet(true))
+                        {
+                            initiated.set(true);
+                            alive.set(true);
+                        }
                         continue;
                     }
                     else if(dataString.equals("keep-alive"))
@@ -236,6 +264,13 @@ public class PunchedUDP
                     byte[] trimmedData = new byte[packet.getLength()];
                     System.arraycopy(data, 0, trimmedData, 0, packet.getLength());
                     receiveQueue.put(trimmedData);
+                }
+                catch(SocketException se)
+                {
+                    if(closed.get())
+                    {
+                        break;
+                    }
                 }
                 catch(IOException ioe)
                 {
